@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 """CLOVA Speech API - FastAPI 서버 (실시간 STT + Object Storage + 비동기 발화자 분석)"""
 
+import sys
+from pathlib import Path
+
+# ========== STT nest 모듈 경로 추가 ==========
+sys.path.insert(0, str(Path(__file__).parent / "stt" / "nest"))
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -14,6 +20,12 @@ import os
 from stt.sttStreaming import ClovaSpeechRecognizer
 from stt.sttSpeaker import ClovaSpeakerAnalyzer, convert_language_code
 
+# chatbotSearchMain에서 chat_endpoint 함수 import
+from chatbot.chatbotSearch.chatbotSearchMain import chat as chatbot_chat_endpoint
+from chatbot.chatbotSearch.models import ChatRequest, ChatResponse
+
+# chatbotFAQMain에서 FAQ chat_endpoint 함수 import  
+from chatbot.chatbotFAQ.chatbotFAQMain import chat as chatbot_faq_endpoint
 
 # ======================================================
 # FastAPI 기본 설정
@@ -63,6 +75,24 @@ async def health_check():
     return {"status": "healthy", "service": "CLOVA Speech API"}
 
 
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest):
+    """회의록 검색 챗봇"""
+    result = await chatbot_chat_endpoint(request)
+    
+    # [수정] history 제거
+    result.history = None
+    
+    print(f"🔹 FastAPI 응답: {result.model_dump(exclude_none=True)}")
+    
+    return result
+
+
+@app.post("/api/faq", response_model=ChatResponse)
+async def faq_endpoint(request: ChatRequest):
+    """FAQ 챗봇 (IT 용어)"""
+    return await chatbot_faq_endpoint(request)
+
 # ======================================================
 # WebSocket: 실시간 STT
 # ======================================================
@@ -94,6 +124,24 @@ async def websocket_realtime_stt(websocket: WebSocket):
                         "message": "recording",
                         "info": "STT 시작 (녹음 및 업로드 준비 중)"
                     })
+
+                # ⏸️ 녹음 일시정지
+                elif data["action"] == "pause":
+                    if recognizer.pause_recording():
+                        await websocket.send_json({
+                            "type": "status",
+                            "message": "paused",
+                            "info": "STT 일시정지됨"
+                        })
+
+                # ▶️ 녹음 재개
+                elif data["action"] == "resume":
+                    if recognizer.resume_recording():
+                        await websocket.send_json({
+                            "type": "status",
+                            "message": "resumed",
+                            "info": "STT 재개됨"
+                        })
 
                 # 🛑 녹음 중지
                 elif data["action"] == "stop":
@@ -373,14 +421,15 @@ async def download_audio():
 # ======================================================
 if __name__ == "__main__":
     print("\n" + "=" * 80)
-    print("🚀 CLOVA Speech API 서버 시작! (STT + Object Storage + ExternalURL 분석)")
+    print("🚀 Dialog AI Server 시작! (STT + 회의록 검색 + FAQ 통합)")
     print("=" * 80)
     print("📡 주요 엔드포인트:")
     print("   • ws://localhost:8000/ws/realtime   → 실시간 STT")
-    print("   • POST /api/analyze/object          → Object Storage 기반 발화자 분석")
+    print("   • POST /api/chat                    → 회의록 검색 챗봇")
+    print("   • POST /api/faq                     → FAQ 챗봇 (IT 용어)")
+    print("   • POST /api/analyze/object          → 발화자 분석")
     print("   • GET  /api/analyze/{token}         → 비동기 결과 조회")
-    print("   • GET  /api/health                  → 서버 상태 확인")
+    print("   • GET  /docs                        → API 문서")
     print("=" * 80 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
