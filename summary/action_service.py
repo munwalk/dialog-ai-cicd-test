@@ -173,12 +173,12 @@ def parse_actions(
         r'[0-9]{1,2}월\s*[0-9]{1,2}일',
         r'[0-9]{1,2}월\s*말(일)?',
         r'월말',
-        r'\[\s*\]'
     ]
     date_regex = re.compile("|".join(date_patterns))
 
     for line in lines:
         trimmed = line.strip()
+        # 리스트 형태가 아니면 스킵
         if not (trimmed.startswith('-') or trimmed.startswith('•') or re.match(r'^\d+\.', trimmed)):
             continue
 
@@ -189,7 +189,7 @@ def parse_actions(
         time_str = ""
         deadline = ''
 
-        # 담당자 파싱
+        # 1. 담당자 파싱
         assignee_match = re.search(r'\(([^)]+)\)', text)
         if assignee_match:
             potential_assignee = assignee_match.group(1).strip()
@@ -205,7 +205,7 @@ def parse_actions(
         elif raw_assignee: 
             assignee = raw_assignee
 
-        # 날짜 파싱
+        # 2. 날짜 파싱 (대괄호 안의 내용 우선 확인)
         found_date_str = ""
         bracket_matches = list(re.finditer(r'\[([^\]]+)\]', text))
         
@@ -228,15 +228,19 @@ def parse_actions(
             else:
                 deadline = found_date_str
         
-        text = text.replace('[]', '').strip()
+        # 날짜 파싱 후 빈 대괄호 제거
+        text = re.sub(r'\[\s*\]', '', text).strip()
 
-        # 시간 파싱
+        # 3. 시간 파싱
         time_match = time_regex.search(text)
         if time_match:
             time_str = time_match.group(1).strip()
             text = text.replace(time_match.group(0), '').strip()
 
-        # 텍스트 클리닝
+        # 시간 추출 후 남은 잔여 텍스트 제거
+        text = re.sub(r'[\[\(]\s*(?:이전|이후|경|쯤|안으로)\s*[\]\)]', '', text).strip()
+
+        # 4. 텍스트 클리닝
         text = re.sub(r'까지|합니다|해야\s*합니다', '', text).strip()
         text = re.sub(r'[.,;]$', '', text).strip()
         text = re.sub(r'(을|를|은|는|이|가|와|과|에|에서)$', '', text).strip()
@@ -244,6 +248,9 @@ def parse_actions(
         
         if time_str:
             text += f" ({time_str})"
+
+        if "할 일 없음" in text or "없습니다" in text:
+            continue
 
         if text:
             item = ActionItem(
@@ -298,7 +305,9 @@ async def call_hyperclova(
                     f"**회의 기준 날짜: {meeting_date}**\n\n"
                     
                     f"## 필독: 작업 지침\n"
-                    f"회의 대화를 분석하여 '내 할 일(To-Do)'을 추출하세요. 아래 3가지 유형을 모두 찾아야 합니다.\n\n"
+                    f"회의 대화를 분석하여 **명확하게 합의된 '내 할 일(To-Do)'만** 추출하세요.\n"
+                    f"**추측해서 생성하지 마세요.** 대화에 없는 내용은 절대 만들지 마세요.\n"
+                    f"할 일이 전혀 발견되지 않으면 반드시 '할 일 없음'이라고만 출력하세요.\n\n"
                     
                     f"1. **유형 1 (본인 의지)**: '{user_name}'(당신)이 직접 하겠다고 말한 작업.\n"
                     f"2. **유형 2 (지시 받음)**: 타인이 '{user_name}'에게 지시하거나 요청한 작업.\n"
@@ -310,19 +319,18 @@ async def call_hyperclova(
                     f"- 형식: `- [팀명(선택)] 작업 내용 (담당자) [마감기한]`\n\n"
                     
                     f"## 작성 예시 (Good Case vs Bad Case)\n"
-                    f"(Good) - [백엔드팀] 기존 레거시 코드 쿼리 점검 (담당자 미지정) [이번 주 금요일]\n"
-                    f"(Bad) - 백엔드 팀 전체가 쿼리 점검해야 함 (담당자 미지정)\n"
-                    f"(Good) - API 명세서 작성 ({user_name}) [내일]\n\n"
+                    f"(Good) - [백엔드팀] 쿼리 성능 개선 (담당자 미지정) [이번 주 금요일]\n"
+                    f"(Good) - 클라우드 비용 보고서 제출 ({user_name}) [내일]\n"
+                    f"(Bad) - 회의록 정리 및 공유 ({user_name}) [내일] -> (설명: 대화에 회의록 정리하겠다는 말이 없으면 절대 쓰지 말 것)\n"
+                    f"(Good) - 할 일 없음 -> (설명: 대화가 단순 잡담이거나 구체적인 할 일이 없을 때)\n\n"
                     
                     f"## [중요] 세부 규칙\n"
-                    f"1. **유형 3 (팀 업무)**:\n"
-                    f"   - 문장이 자연스럽지 않아도 좋으니 맨 앞에 반드시 `[백엔드팀]` 처럼 태그를 붙이세요.\n"
-                    f"   - 담당자는 `(담당자 미지정)`으로 적으세요.\n"
-                    f"2. **담당자 표기**:\n"
-                    f"   - 본인이면 `({user_name})`, 다른 사람이면 그 사람 이름을 적으세요.\n"
-                    f"   - 누군지 모르면 `(담당자 미지정)`으로 적으세요.\n"
-                    f"3. **날짜 표기**:\n"
-                    f"   - 대화에 나온 그대로(예: [다음 주 월요일]) 적고, 없으면 `[]` 빈 괄호를 적으세요.\n\n"
+                    f"1. **할 일이 없는 경우**:\n"
+                    f"   - 간식 논의, 단순 인사, 잡담 등 구체적 업무가 없으면 반드시 '할 일 없음'이라고만 적으세요.\n"
+                    f"   - '회의록 작성', '정리' 같은 상투적인 내용을 임의로 추가하지 마세요.\n"
+                    f"2. **날짜 표기**:\n"
+                    f"   - 대화에 날짜가 언급된 경우에만 `[내일]` 처럼 적으세요.\n"
+                    f"   - **날짜가 없으면 대괄호 []를 아예 쓰지 마세요.** 빈 괄호 `[]`도 금지입니다.\n\n"
                     
                     f"## 회의 대화\n{conversation_text}\n\n"
                     f"'{user_name}'님의 할 일 목록:"
@@ -435,33 +443,44 @@ async def generate_all_actions_service(request: ActionRequest) -> List[ActionIte
             for action in all_actions:
                 assignee = action.assignee
                 
-                # 1. 대괄호 태그가 있는지 확인
+                # 1. 대괄호 태그가 있는지 확인 (예: [백엔드팀])
                 has_team_tag = re.match(r'^\[.*(?:팀|부서|파트).*\]', action.title)
                 
-                # 2. 태그가 없더라도, 본문에 '팀 전체', '팀원들' 같은 명확한 단체 행동 키워드가 있는지 확인
-                # (주의: '팀장에게'는 개인 업무이므로 제외해야 함 -> '팀 전체', '부서 전체', '팀원' 등으로 한정)
-                has_group_keyword = "팀 전체" in action.title or "부서 전체" in action.title or "팀원들" in action.title or "팀 내" in action.title
+                # 2. 대괄호 없이 'OO팀'으로 시작하는지 확인 (예: 백엔드팀은, 개발팀이)
+                starts_with_team = re.match(r'^\s*\S+(?:팀|부서|파트)', action.title)
 
-                if has_team_tag or has_group_keyword:
-                    # 태그가 있거나, 단체 키워드가 있으면 '담당자 미지정'으로 강제
+                # 3. 본문에 '팀 전체', '백엔드팀' 등 키워드가 포함되어 있는지 확인
+                has_group_keyword = (
+                    "팀 전체" in action.title 
+                    or "부서 전체" in action.title 
+                    or "팀원들" in action.title 
+                    or "팀 내" in action.title
+                    or "백엔드팀" in action.title
+                    or "프론트엔드팀" in action.title
+                    or "개발팀" in action.title
+                )
+
+                # 조건: 팀 태그가 있거나, 팀으로 시작하거나, 그룹 키워드가 있는 경우
+                if has_team_tag or starts_with_team or has_group_keyword:
+                    # '담당자 미지정'으로 강제 설정
                     action.assignee = "담당자 미지정"
                     
-                    # 만약 AI가 태그를 안 붙였다면, 강제로 [팀 업무] 태그 추가
+                    # 태그가 없었다면 강제로 [팀 업무] 태그 추가
                     if not has_team_tag:
                         action.title = f"[팀 업무] {action.title}"
                         
                     final_actions.append(action)
 
-                # 3. 개인 업무 (참가자 명단에 있는 경우)
+                # 4. 개인 업무 (참가자 명단에 있는 경우)
                 elif assignee in participants_list:
                     final_actions.append(action)
                 
-                # 4. 미지정 업무
+                # 5. 미지정 업무
                 elif assignee in ['담당자 미지정', '미지정', '']:
                     action.assignee = "담당자 미지정" 
                     final_actions.append(action)
 
-                # 5. 그 외
+                # 6. 그 외
                 else:
                     action.assignee = "담당자 미지정" 
                     final_actions.append(action)
