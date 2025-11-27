@@ -63,5 +63,12 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /opt/dialog
+            # 기존 AI 컨테이너 정리
+            docker-compose stop ai-server || true
+            docker-compose rm -f ai-server || true
+            # 최신 이미지 받기
             docker pull munwalk/dialog-ai:latest
+            # AI 서버 재시작
             docker-compose up -d ai-server
+            # 상태 확인
+            docker ps | grep dialog-ai
